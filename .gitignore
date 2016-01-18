@@ -1,0 +1,8 @@
+/.*
+!/.gitignore
+/bower_components/
+/node_modules/
+/output/
+/dist/app.js
+npm-debug.log
+src/.webpack.js
