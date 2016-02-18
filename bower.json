@@ -1,6 +1,6 @@
 {
   "private": true,
-  "name": "purescript-halogen-template",
+  "name": "purescript-halogen-playground",
   "ignore": [
     "**/.*",
     "node_modules",
