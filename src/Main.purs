@@ -12,11 +12,15 @@ import qualified Halogen.HTML.Indexed as H
 import qualified Halogen.HTML.Events.Indexed as E
 
 data Query a = ToggleState a
+             | Inc a
+             | Dec a
 
-type State = { on :: Boolean }
+type State = { on :: Boolean
+             , count :: Int
+             }
 
 initialState :: State
-initialState = { on: false }
+initialState = { on: false, count: 0 }
 
 ui :: forall g. (Functor g) => Component State Query g
 ui = component render eval
@@ -36,11 +40,29 @@ ui = component render eval
               then "Don't push me"
               else "I said don't push me!"
           ]
+      , H.p_
+          [ H.button
+                [ E.onClick (E.input_ Inc) ]
+                [ H.text
+                    if state.count < 1
+                    then "I've never been pressed!"
+                    else "I've been pressed " <> show state.count <> " times."
+                ]
+          , H.button
+                [ E.onClick (E.input_ Dec) ]
+                [ H.text "Memory Hole! ¯\\_(ツ)_/¯" ]
+          ]
       ]
 
   eval :: Natural Query (ComponentDSL State Query g)
   eval (ToggleState next) = do
-    modify (\state -> { on: not state.on })
+    modify (\state -> state { on = not state.on })
+    pure next
+  eval (Inc next) = do
+    modify (\state -> state { count = state.count + 1 })
+    pure next
+  eval (Dec next) = do
+    modify (\state -> state { count = state.count - 1})
     pure next
 
 main :: Eff (HalogenEffects ()) Unit
