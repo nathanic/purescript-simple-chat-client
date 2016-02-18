@@ -2,70 +2,110 @@ module Main where
 
 import Prelude
 
-import Control.Monad.Aff (runAff)
+import Control.Alt ((<|>))
+import Control.Monad.Aff (Aff(), runAff)
 import Control.Monad.Eff (Eff())
 import Control.Monad.Eff.Exception (throwException)
+
+import Data.Either (Either(..))
+import Data.Foldable (foldMap)
+import Data.Foreign.Class (readProp)
+import Data.Functor (($>))
+import Data.Maybe (Maybe(..))
 
 import Halogen
 import Halogen.Util (appendToBody, onLoad)
 import qualified Halogen.HTML.Indexed as H
 import qualified Halogen.HTML.Events.Indexed as E
+import qualified Halogen.HTML.Properties.Indexed as P
 
-data Query a = ToggleState a
-             | Inc a
-             | Dec a
+import Network.HTTP.Affjax (AJAX(), post)
 
-type State = { on :: Boolean
-             , count :: Int
-             }
+-- | The state of the component.
+type State = { busy :: Boolean, code :: String, result :: Maybe String }
 
 initialState :: State
-initialState = { on: false, count: 0 }
+initialState = { busy: false, code: exampleCode, result: Nothing }
 
-ui :: forall g. (Functor g) => Component State Query g
+exampleCode :: String
+exampleCode = """module Main where
+
+import Prelude
+import Control.Monad.Eff.Console (print)
+
+fact :: Int -> Int
+fact 0 = 1
+fact n = n * fact (n - 1)
+
+main = print (fact 20)
+"""
+
+-- | The component query algebra.
+data Query a
+  = SetCode String a
+  | MakeRequest String a
+
+-- | The effects used in the app.
+type AppEffects eff = HalogenEffects (ajax :: AJAX | eff)
+
+-- | The definition for the app's main UI component.
+ui :: forall eff. Component State Query (Aff (AppEffects eff))
 ui = component render eval
   where
-
-  render :: State -> ComponentHTML Query
-  render state =
-    H.div_
-      [ H.h1_
-          [ H.text "Hello world!" ]
-      , H.p_
-          [ H.text "Why not toggle this button:" ]
-      , H.button
-          [ E.onClick (E.input_ ToggleState) ]
-          [ H.text
-              if not state.on
-              then "Don't push me"
-              else "I said don't push me!"
-          ]
-      , H.p_
-          [ H.button
-                [ E.onClick (E.input_ Inc) ]
-                [ H.text
-                    if state.count < 1
-                    then "I've never been pressed!"
-                    else "I've been pressed " <> show state.count <> " times."
+    render :: State -> ComponentHTML Query
+    render st =
+        H.div_ $
+        [ H.h1_
+            [ H.text "ajax example / trypurescript" ]
+        , H.h2_
+            [ H.text "purescript input:" ]
+        , H.p_
+            [ H.textarea
+                [ P.value st.code
+                , E.onValueInput (E.input SetCode)
                 ]
-          , H.button
-                [ E.onClick (E.input_ Dec) ]
-                [ H.text "Memory Hole! ¯\\_(ツ)_/¯" ]
-          ]
-      ]
+            ]
+        , H.p_
+            [ H.button
+                [ P.disabled st.busy
+                , E.onClick (E.input_ (MakeRequest st.code))
+                ]
+                [ H.text "Compile" ]
+            ]
+        , H.p_
+            [ H.text (if st.busy then "Working..." else "") ]
+        ]
+        -- foldMap for Maybe, interestin'
+        ++ flip foldMap st.result \js ->
+            [ H.div_
+                [ H.h2_
+                    [ H.text "javascript output:" ]
+                , H.pre_
+                    [ H.code_ [ H.text js ] ]
+                ]
+            ]
 
-  eval :: Natural Query (ComponentDSL State Query g)
-  eval (ToggleState next) = do
-    modify (\state -> state { on = not state.on })
-    pure next
-  eval (Inc next) = do
-    modify (\state -> state { count = state.count + 1 })
-    pure next
-  eval (Dec next) = do
-    modify (\state -> state { count = state.count - 1})
-    pure next
+    eval :: Natural Query (ComponentDSL State Query (Aff (AppEffects eff)))
+    eval (SetCode code next) = modify (_ { code = code, result = Nothing :: Maybe String }) $> next
+    eval (MakeRequest code next) = do
+        modify (_ { busy = true })
+        result <- liftAff' (fetchJS code)
+        modify (_ { busy = false, result = Just result })
+        pure next
 
-main :: Eff (HalogenEffects ()) Unit
+-- | Post some PureScript code to the trypurescript API and fetch the JS result.
+fetchJS :: forall eff. String -> Aff (ajax :: AJAX | eff) String
+fetchJS code = do
+  -- result <- post "http://try.purescript.org/compile/text" code
+  result <- post "https://compile.purescript.org/compile" code
+  let response = result.response
+  return case readProp "js" response <|> readProp "error" response of
+    Right js -> js
+    Left _ -> "Invalid response"
+
+-- | Run the app.
+main :: Eff (AppEffects ()) Unit
 main = runAff throwException (const (pure unit)) $ do
   app <- runUI ui initialState
   onLoad $ appendToBody app.node
+
