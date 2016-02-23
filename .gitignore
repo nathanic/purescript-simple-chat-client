@@ -5,4 +5,4 @@
 /output/
 /dist/app.js
 npm-debug.log
-src/.webpack.js
+.webpack.js
