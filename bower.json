@@ -1,6 +1,6 @@
 {
   "private": true,
-  "name": "purescript-halogen-playground",
+  "name": "purescript-simple-chat-client",
   "ignore": [
     "**/.*",
     "node_modules",
