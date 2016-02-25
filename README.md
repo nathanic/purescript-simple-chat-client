@@ -1,56 +1,43 @@
-# purescript-halogen-template
+# simple-chat-client
 
-This is a template for starting a fresh project using the [purescript-halogen](https://github.com/slamdata/purescript-halogen) library for declarative user interfaces.
+This is my first PureScript program, something simple for me to play around
+with.  In particular, I am interested in
+[Halogen](https://github.com/slamdata/purescript-halogen) and WebSockets.
 
-## Prerequisites
+I decided to make a client for the Haskell `websockets` library's nice little
+[example chat server](https://jaspervdj.be/websockets/example.html).  I took
+the code from that example, added project files such that I could build it with
+Stack, and put it in the `server/` directory in this repo.
 
-This guide assumes you already have Git and Node.js installed with `npm` somewhere on your path.
+I instantiated this from
+[purescript-halogen-template](https://github.com/slamdata/purescript-halogen-template)
+This is a template for starting a fresh project using the library for
+declarative user interfaces.
 
-In the PureScript ecosystem [Bower](http://bower.io/) is the most commonly used package manager and we'll be relying on it for this project, so if you don't already have it, you can install it like this:
+## Running the Server
 
-``` shell
-npm install --global bower
-```
-
-## Getting started
-
-First clone the repo and step into it:
-
-``` shell
-git clone https://github.com/slamdata/purescript-halogen-template.git my-halogen-project
-cd my-halogen-project
-```
-
-If you already have a global installation of the PureScript compiler and [Pulp](https://github.com/bodil/pulp), you can run:
+The server is a Haskell program.  You'll need [Stack](http://haskellstack.org) to build it.
 
 ``` shell
-npm install --production
+cd server
+stack install
+stack exec simple-chat-server-exe
 ```
+It'll echo chat traffic to stdout.
 
-If you want to install a local copy of the PureScript compiler and Pulp then just run the usual:
+## Running the Client
 
-``` shell
-npm install
-```
-
-`npm install` is required for Halogen due to its dependency on `virtual-dom`. A postinstall script should have installed the remaining Bower dependencies.
-
-## Building
-
-The project can now be built with:
+Build it:
 
 ``` shell
 npm run build
 ```
 
-This will build the PureScript source code, run Browserify on the output, and produce a bundled JS file with `virtual-dom` and the PureScript-compiled JS as `dist/app.js`.
-
-This is an alias for the Pulp command:
+Though I mainly just edit the code in vim and run this in a tmux split:
 
 ``` shell
-pulp browserify --to dist/app.js
+npm run watch
 ```
+Now you can just load the page via file:// from the project directory.  There's
+probably better ways, I'm new to PureScript.
 
-If you open `dist/index.html` you should now have a basic working Halogen app. 
-
-That's pretty much it. Have fun with Halogen!
