@@ -39,8 +39,11 @@ type State = { messages :: Array ChatMessage
              , buffer :: String
              , user :: User
              , socket :: Maybe Connection
-             -- , connect :: forall eff. URL -> Eff (AppEffects eff) Unit
-             , connect :: URL -> Eff (AppEffects ()) Unit
+             -- XXX this type is more inclusive than needed
+             -- we really only need AVAR and WEBSOCKET, but
+             -- i can't get the liftAff' on this connect fn to typecheck
+             -- since it has a different effect row from the component
+             , connect :: URL -> Aff (AppEffects ()) Unit
              }
 
 initialState :: State
@@ -48,7 +51,7 @@ initialState = { messages: []
                , buffer: ""
                , user: "AnonymousCoward"
                , socket: Nothing
-               , connect: const $ log "ERROR: skeevy placeholder for connect was called somehow!"
+               , connect: const (pure unit)
                }
 
 type ChatMessage = { content :: String
@@ -80,6 +83,7 @@ unlines :: Array String -> String
 unlines = joinWith "\n"
 
 -- | The definition for the app's main UI component.
+-- can't do an open row here or it won't typecheck :-/
 -- ui :: forall eff. Component State Query (Aff (AppEffects eff))
 ui :: Component State Query (Aff (AppEffects ()))
 ui = component render eval
@@ -125,10 +129,11 @@ ui = component render eval
                 ]
             ]
 
+    -- eval :: Natural Query (ComponentDSL State Query (Aff (AppEffects eff)))
     eval :: Natural Query (ComponentDSL State Query (Aff (AppEffects ())))
     eval (ConnectButton next) = do
         connect <- gets _.connect
-        liftEff' $ connect chatServerUrl
+        liftAff' $ connect chatServerUrl
         pure next
     eval (Connect conn next) = do
         modify _ { socket = Just conn }
@@ -154,19 +159,17 @@ ui = component render eval
         modify _ { user = user }
         pure next
 
--- | convencience fn to send a string through the websocket Connection.
+-- | convenience fn to send a string through the websocket Connection.
 -- | this takes a Maybe because, well, that's how it is in State and it's more
 -- | convenient to keep the pattern match in one place. 
 -- | same goes for the liftEff, and even the argument order (for >>=).
--- send :: String -> Maybe Connection -> Aff (ws :: WEBSOCKET | ()) Unit
-send :: String -> Maybe Connection -> Aff (AppEffects ()) Unit
+send :: forall eff. String -> Maybe Connection -> Aff (ws :: WEBSOCKET | eff) Unit
 send _ Nothing                    = pure unit
 send s (Just (Connection socket)) = liftEff $ socket.send $ Message s
 
 -- | This is an even *more* convenient send helper that is hoisted into the lofty
--- | hights of the Halogen Free Monad!
--- send' :: forall eff. String -> Maybe Connection -> Free (HalogenF State Query (Aff (ws :: WEBSOCKET | eff)) Unit)
-send' :: String -> Maybe Connection -> ComponentDSL State Query (Aff (AppEffects ())) Unit
+-- | heights of the Halogen Free Monad!
+send' :: forall eff. String -> Maybe Connection -> ComponentDSL State Query (Aff (ws :: WEBSOCKET | eff)) Unit
 send' s c = liftAff' $ send s c
 
 -- | saves us some typing and lift-spam
@@ -177,26 +180,26 @@ log' = liftEff <<< log
 -- | we need for this particular app. The event handlers publish Query values
 -- | to the AVar argument, so they can be fed to the component's driver function
 -- | elsewhere.
--- makeSocket :: forall eff. AVar (Query Unit) -> URL -> Eff (AppEffects eff) Unit
-makeSocket :: AVar (Query Unit) -> URL -> Eff (AppEffects ()) Unit
+makeSocket :: forall eff. AVar (Query Unit) -> URL -> Aff (avar :: AVAR, ws :: WEBSOCKET | eff) Unit
 makeSocket chan url = do
-    conn@(Connection socket) <- newWebSocket url []
+    liftEff do
+        conn@(Connection socket) <- newWebSocket url []
 
-    socket.onopen $= \event -> do
-        logAny event
-        log "onopen: Connection opened"
-        launchAff $ putVar chan $ action $ Connect conn
+        socket.onopen $= \event -> do
+            logAny event
+            log "onopen: Connection opened"
+            launchAff $ putVar chan $ action $ Connect conn
 
-    socket.onmessage $= \event -> do
-        logAny event
-        let received = runMessage (runMessageEvent event)
-        log $ "onmessage: Received '" ++ received ++ "'"
-        launchAff $ putVar chan $ action $ ReceivedMessage received
+        socket.onmessage $= \event -> do
+            logAny event
+            let received = runMessage (runMessageEvent event)
+            log $ "onmessage: Received '" ++ received ++ "'"
+            launchAff $ putVar chan $ action $ ReceivedMessage received
 
-    socket.onclose $= \event -> do
-        logAny event
-        log "onclose: Connection closed"
-        launchAff $ putVar chan $ action $ Disconnect
+        socket.onclose $= \event -> do
+            logAny event
+            log "onclose: Connection closed"
+            launchAff $ putVar chan $ action $ Disconnect
 
     pure unit
 
