@@ -12,7 +12,6 @@
     "purescript-console": "^0.1.0",
     "purescript-generics": "^0.7.0",
     "purescript-halogen": "^0.5.14",
-    "purescript-affjax": "^0.8.0",
     "purescript-free": "^0.9.1",
     "purescript-tailrec": "^0.3.1",
     "purescript-websocket-simple": "^0.2.0"

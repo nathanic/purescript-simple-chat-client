@@ -11,14 +11,16 @@ import Control.Monad.Aff.AVar (AVar(), AVAR(), makeVar, putVar, takeVar)
 import Control.Monad.Eff (Eff())
 import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Eff.Console (CONSOLE(), log)
-import Control.Monad.Eff.Exception (EXCEPTION(), throwException)
+import Control.Monad.Eff.Exception (throwException)
 import Control.Monad.Eff.Console.Unsafe (logAny)
 import Control.Monad.Eff.Var (($=))
 
-import Data.Array (snoc)
-import Data.Foldable (foldMap)
+import Data.Array (replicate,snoc)
+import Data.Function (Fn1(),runFn1)
 import Data.Maybe (Maybe(..), isJust, isNothing)
 import Data.String (joinWith)
+
+import DOM (DOM())
 
 import Halogen
 import Halogen.HTML.Indexed as H
@@ -26,33 +28,21 @@ import Halogen.HTML.Events.Indexed as E
 import Halogen.HTML.Properties.Indexed as P
 import Halogen.Util (appendToBody, onLoad)
 
-import Network.HTTP.Affjax (AJAX(), post)
-
 import WebSocket
 
 -- | hard-coded because this is just a dang demo
 chatServerUrl :: URL
 chatServerUrl = URL "ws://localhost:9160"
+-- (was testing accessing my laptop from my phone)
+-- chatServerUrl = URL "ws://munin:9160"
 
 -- | The state of the component.
 type State = { messages :: Array ChatMessage
              , buffer :: String
              , user :: User
              , socket :: Maybe Connection
-             -- XXX this type is more inclusive than needed
-             -- we really only need AVAR and WEBSOCKET, but
-             -- i can't get the liftAff' on this connect fn to typecheck
-             -- since it has a different effect row from the component
-             , connect :: URL -> Aff (AppEffects ()) Unit
+             , queryChan :: AVar (Query Unit)
              }
-
-initialState :: State
-initialState = { messages: []
-               , buffer: ""
-               , user: "AnonymousCoward"
-               , socket: Nothing
-               , connect: const (pure unit)
-               }
 
 type ChatMessage = { content :: String
                    -- a real app would probably store other stuff here
@@ -60,13 +50,10 @@ type ChatMessage = { content :: String
 type User = String
 
 -- | The effects used in the app.
-type AppEffects eff =
-        HalogenEffects (
-              -- ajax :: AJAX ,
-              console :: CONSOLE,
-              ws :: WEBSOCKET
-            | eff
-            )
+type AppEffects eff = HalogenEffects ( console :: CONSOLE
+                                     , ws :: WEBSOCKET
+                                     | eff
+                                     )
 
 -- | The component query algebra.
 data Query a
@@ -77,6 +64,10 @@ data Query a
   | ConnectButton a
   | Connect Connection a
   | Disconnect a
+
+-- for some reason this first def for AppDriver won't typecheck
+-- type AppDriver = Driver Query (AppEffects ())
+type AppDriver = Query Unit -> Aff (AppEffects ()) Unit
 
 -- | Didn't seem worth an extra bower import
 unlines :: Array String -> String
@@ -107,11 +98,10 @@ ui = component render eval
                     ]
                 ]
             , H.p_
-                [ H.textarea
-                    [ P.value $ unlines $ map _.content st.messages
-                    , P.readonly true
-                    , P.class_ $ H.className "chatbox"
-                    ]
+                [ H.pre
+                    [ P.class_ $ H.className "chatbox"
+                    , P.id_ "chatbox" ]
+                    [ H.text $ unlines $ map _.content st.messages ]
                 ]
             , H.p_
                 [ H.input
@@ -126,14 +116,19 @@ ui = component render eval
                     , E.onClick (E.input_ (SendMessage st.buffer))
                     ]
                     [ H.text "Send" ]
+                , H.button
+                    [ P.disabled (isNothing st.socket)
+                    , E.onClick (E.input_ (SendMessage (unlines $ replicate 10 st.buffer)))
+                    ]
+                    [ H.text "Spam!" ]
                 ]
             ]
 
     -- eval :: Natural Query (ComponentDSL State Query (Aff (AppEffects eff)))
     eval :: Natural Query (ComponentDSL State Query (Aff (AppEffects ())))
     eval (ConnectButton next) = do
-        connect <- gets _.connect
-        liftAff' $ connect chatServerUrl
+        driver <- makeAuxDriver <$> get
+        liftAff' $ makeSocket driver chatServerUrl
         pure next
     eval (Connect conn next) = do
         modify _ { socket = Just conn }
@@ -147,6 +142,7 @@ ui = component render eval
         pure next
     eval (ReceivedMessage content next) = do
         modify \st -> st { messages = st.messages `snoc` {content: content}}
+        liftEff' $ scrollBottom "chatbox"
         pure next
     eval (SendMessage content next) = do
         modify _ { buffer = "" }
@@ -159,9 +155,14 @@ ui = component render eval
         modify _ { user = user }
         pure next
 
+-- XXX is DOM an appropriate effect here? we do query the DOM and poke an element prop...
+foreign import scrollBottomImpl :: forall e. Fn1 String (Eff (dom :: DOM | e) Unit)
+scrollBottom :: forall e. String -> Eff (dom :: DOM | e) Unit
+scrollBottom = runFn1 scrollBottomImpl
+
 -- | convenience fn to send a string through the websocket Connection.
 -- | this takes a Maybe because, well, that's how it is in State and it's more
--- | convenient to keep the pattern match in one place. 
+-- | convenient to keep the pattern match in one place.
 -- | same goes for the liftEff, and even the argument order (for >>=).
 send :: forall eff. String -> Maybe Connection -> Aff (ws :: WEBSOCKET | eff) Unit
 send _ Nothing                    = pure unit
@@ -176,40 +177,55 @@ send' s c = liftAff' $ send s c
 log' :: forall eff. String -> Aff (console :: CONSOLE | eff) Unit
 log' = liftEff <<< log
 
+-- | We need the Driver function accessible from within the component eval,
+-- | so it can make websockets that can send queries to the component though said driver.
+-- | My hacky solution to this is to carry an AVar around in the State that we can publish
+-- | Query values into.  Elsewhere an async loop is consuming this var and feeding the real driver.
+makeAuxDriver :: forall r. {queryChan :: AVar (Query Unit) | r} -> AppDriver
+makeAuxDriver {queryChan=chan} = putVar chan
+
 -- | Construct a WebSocket Connection and fill it out with the event handlers
--- | we need for this particular app. The event handlers publish Query values
--- | to the AVar argument, so they can be fed to the component's driver function
--- | elsewhere.
-makeSocket :: forall eff. AVar (Query Unit) -> URL -> Aff (avar :: AVAR, ws :: WEBSOCKET | eff) Unit
-makeSocket chan url = do
+-- | we need for this particular app. The supplied Driver fn will be used to
+-- | publish Query values to the associated Halogen Component
+makeSocket :: forall eff. AppDriver -> URL -> Aff (avar :: AVAR, ws :: WEBSOCKET | eff) Unit
+makeSocket driver url = do
     liftEff do
         conn@(Connection socket) <- newWebSocket url []
 
         socket.onopen $= \event -> do
             logAny event
             log "onopen: Connection opened"
-            launchAff $ putVar chan $ action $ Connect conn
+            quietLaunchAff $ driver $ action $ Connect conn
 
         socket.onmessage $= \event -> do
             logAny event
             let received = runMessage (runMessageEvent event)
             log $ "onmessage: Received '" ++ received ++ "'"
-            launchAff $ putVar chan $ action $ ReceivedMessage received
+            quietLaunchAff $ driver $ action $ ReceivedMessage received
 
         socket.onclose $= \event -> do
             logAny event
             log "onclose: Connection closed"
-            launchAff $ putVar chan $ action $ Disconnect
+            quietLaunchAff $ driver $ action $ Disconnect
 
     pure unit
 
+
+quietLaunchAff :: forall eff a. Aff eff a -> Eff eff Unit
+quietLaunchAff = runAff (const (pure unit)) (const (pure unit))
 
 -- | Spawn our various async doodaddery and go!
 main :: Eff (AppEffects ()) Unit
 main = do
     runAff throwException (const (pure unit)) $ do
         chan <- makeVar
-        app <- runUI ui (initialState { connect = makeSocket chan })
+        app <- runUI ui { messages: []
+                        , buffer: ""
+                        , user: "AnonymousCoward"
+                        , socket: Nothing
+                        , queryChan: chan
+                        }
         onLoad $ appendToBody app.node
-        -- forever feed the beast
+        -- The other part of the "aux driver" hack: shuffle queries from the AVar to the Driver
         forever (takeVar chan >>= app.driver)
+
