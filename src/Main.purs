@@ -30,17 +30,12 @@ import Halogen.Util (appendToBody, onLoad)
 
 import WebSocket
 
--- | hard-coded because this is just a dang demo
-chatServerUrl :: URL
-chatServerUrl = URL "ws://localhost:9160"
--- (was testing accessing my laptop from my phone)
--- chatServerUrl = URL "ws://munin:9160"
-
 -- | The state of the component.
 type State = { messages :: Array ChatMessage
              , buffer :: String
              , user :: User
              , socket :: Maybe Connection
+             , chatServerUrl :: String
              , queryChan :: AVar (Query Unit)
              }
 
@@ -60,6 +55,7 @@ data Query a
   = ReceivedMessage String a
   | SendMessage String a
   | SetBuffer String a
+  | SetUrl String a
   | SetUserName String a
   | ConnectButton a
   | Connect Connection a
@@ -89,6 +85,11 @@ ui = component render eval
                     [ P.inputType P.InputText
                     , P.value st.user
                     , E.onValueChange (E.input SetUserName)
+                    ]
+                , H.input
+                    [ P.inputType P.InputText
+                    , P.value st.chatServerUrl
+                    , E.onValueChange (E.input SetUrl)
                     ]
                 , H.button
                     [ E.onClick (E.input_ ConnectButton) ]
@@ -128,7 +129,8 @@ ui = component render eval
     eval :: Natural Query (ComponentDSL State Query (Aff (AppEffects ())))
     eval (ConnectButton next) = do
         driver <- makeAuxDriver <$> get
-        liftAff' $ makeSocket driver chatServerUrl
+        url <- URL <$> gets _.chatServerUrl
+        liftAff' $ makeSocket driver url
         pure next
     eval (Connect conn next) = do
         modify _ { socket = Just conn }
@@ -150,6 +152,9 @@ ui = component render eval
         pure next
     eval (SetBuffer content next) = do
         modify _ { buffer = content }
+        pure next
+    eval (SetUrl content next) = do
+        modify _ { chatServerUrl = content }
         pure next
     eval (SetUserName user next) = do
         modify _ { user = user }
@@ -222,6 +227,7 @@ main = do
         app <- runUI ui { messages: []
                         , buffer: ""
                         , user: "AnonymousCoward"
+                        , chatServerUrl: "ws://localhost:9160"
                         , socket: Nothing
                         , queryChan: chan
                         }
